@@ -6,7 +6,7 @@ MXNet-R library enables to use, developp and learn most state of the art deep le
 
 ## Package Installation
 
-To versions of the package exist for R, CPU and GPU versions. The GPU version include the use of CPU computations, but require further dependencies, and may be harder to install depending on your system. Please check the installation instructions from the [official website](https://mxnet.incubator.apache.org/versions/master/install/)
+Two versions of the package exist for R, CPU and GPU versions. The GPU version include the use of CPU computations, but require further dependencies, and may be harder to install depending on your system. Please check the installation instructions from the [official website](https://mxnet.incubator.apache.org/versions/master/install/)
 
 ## Pre-trained model
 
