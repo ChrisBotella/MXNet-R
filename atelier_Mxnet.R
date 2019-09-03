@@ -6,14 +6,16 @@ require(mxnet)
 require(imager)
 require(ggplot2)
 
-#####
-# Functions
-#####
+MainDevice = mx.gpu()
 
+#####
+# 1) Functions
+#####
 
 # Returns the list of derivative of the loss with respect to each parameter
 # grouped and named by model parts. ex : "conv1_weight"
-get.all.gradients = function(model,X,y,executor,X_name="data",y_name="label"){
+get.all.gradients = function(model,X,y,executor,X_name="data",y_name="label",
+                             device=MainDevice){
   # on lui donne les paramètres du modèle 
   mx.exec.update.arg.arrays(executor , model$arg.params,match.name = T )
   mx.exec.update.aux.arrays(executor, model$aux.params, match.name=T)
@@ -32,7 +34,7 @@ get.all.gradients = function(model,X,y,executor,X_name="data",y_name="label"){
 
 
 # personal prediction service (compatible with 2D (vector) and 4D (3-dim arrays) input data, as well as uni and multilabel output)
-predict.executor = function(predictor.symbol,params,Array,devices,max.compute.size=100,aux.params=NULL,verbose=F){
+predict.executor = function(predictor.symbol,params,Array,max.compute.size=100,aux.params=NULL,verbose=F,devices=MainDevice){
   if(length(dim(Array))==4){
     if(verbose){print('Assume colmajor, detect 4 dimensional input')}
     N = dim(Array)[4]
@@ -50,7 +52,7 @@ predict.executor = function(predictor.symbol,params,Array,devices,max.compute.si
     not.complete = rest>0 & i==n.pass
     # We create an executor for computing predictions on the data slice
     prediction = mx.simple.bind(predictor.symbol,
-                                ctx=devices,
+                                ctx=MainDevice,
                                 data= c(first_dim,not.complete * rest + (!not.complete) * max.compute.size))
     # We provide the input data to the executor
     if(not.complete){band=(N-rest+1):N}else{band = (i-1)*max.compute.size + 1:max.compute.size}
@@ -87,7 +89,7 @@ predict.executor = function(predictor.symbol,params,Array,devices,max.compute.si
 }
 
 # Loss executor
-loss.executor = function(predictor.symbol,params,Array,y,devices,max.compute.size=100,aux.params=NULL,verbose=F){
+loss.executor = function(predictor.symbol,params,Array,y,max.compute.size=100,aux.params=NULL,verbose=F,devices=MainDevice){
   if(length(dim(Array))==4){
     if(verbose){print('Assume colmajor, detect 4 dimensional input')}
     N = dim(Array)[4]
@@ -158,7 +160,7 @@ plot.RGBarray = function(RGBarray){
 }
 
 #####
-# Use MxNet Nd Arrays
+# 2) Use MxNet Nd Arrays
 #####
 
 ## Simple vector
@@ -184,84 +186,39 @@ mat <- mx.nd.array(x)
 mat <- (mat * 3 + 5) / 10
 as.array(mat)
 
-## Matrix GPU
-x <- as.array(matrix(1:4, 2, 2))
+if(MainDevice$device=="gpu"){
+  ## Matrix GPU
+  x <- as.array(matrix(1:4, 2, 2))
+  
+  mx.ctx.default(mx.gpu())
+  print(mx.ctx.default())
+  print(is.mx.context(mx.cpu()))
+  
+  mat <- mx.nd.array(x)
+  mat2 <- (mat * 3 + 5) / 10
+  as.array(mat2)
+  
+  ## Matrices dot product Mxnet-GPU vs base-R
+  n = 1000
+  a <- mx.rnorm(c(n, n),ctx=mx.gpu()) # create a 2-by-3 matrix on cpu
+  b <- mx.rnorm(c(n, n), ctx=mx.gpu()) # create a 2-by-3 matrix on cpu
+  
+  deb = Sys.time()
+  c = mx.nd.dot(a,b)
+  print(Sys.time()-deb)
+  
+  aa = as.array(a)
+  bb = as.array(b)
+  
+  deb = Sys.time()
+  cc = aa %*% bb
+  print(Sys.time()-deb)
+}
 
-mx.ctx.default(mx.gpu())
-print(mx.ctx.default())
-print(is.mx.context(mx.cpu()))
-
-mat <- mx.nd.array(x)
-mat2 <- (mat * 3 + 5) / 10
-as.array(mat2)
-
-## Matrices dot product Mxnet-GPU vs base-R
-n = 1000
-a <- mx.rnorm(c(n, n),ctx=mx.gpu()) # create a 2-by-3 matrix on cpu
-b <- mx.rnorm(c(n, n), ctx=mx.gpu()) # create a 2-by-3 matrix on cpu
-
-deb = Sys.time()
-c = mx.nd.dot(a,b)
-print(Sys.time()-deb)
-
-aa = as.array(a)
-bb = as.array(b)
-
-deb = Sys.time()
-cc = aa %*% bb
-print(Sys.time()-deb)
-
-rm(list = ls())
 gc(reset=T)
 
-
-
 #####
-# NB: SET THE SEED
-#####
-
-# Use mx.set.seed instead of set.seed (doesn't work with mxnet number generator)
-# the seed is device specific=> generated numbers will not be the same between 
-# GPU and CPU
-cont = mx.gpu()
-mx.set.seed(0)
-mx.runif(c(1,4),0,1,ctx=cont)
-
-cont = mx.cpu(0)
-mx.set.seed(0)
-mx.runif(c(1,4),0,1,ctx=cont)
-
-
-#####
-# Test executor 
-#####
-
-ve = array(c(1:3,3:1),dim=c(3,2))
-weights = matrix(c(1,0,0,0,1,0,0,0,1),3,3)
-# TEST executor
-data = mx.symbol.Variable(name="data")
-linPred = mx.symbol.FullyConnected( data = data, num_hidden = 3 , name="linpred" )
-output = mx.symbol.softmax(linPred,axis=1,name="SoftMax")
-
-Executor = mx.simple.bind(output,
-                          ctx=mx.cpu(),
-                          data= dim(ve))
-
-# on lui donne les données d'entrée (et de sortie pour la loss)
-# arguments parameters
-mx.exec.update.arg.arrays(Executor, list(data=mx.nd.array(ve),linpred_weight=mx.nd.array(weights)) , match.name=T)
-
-# is.train=F very important, batchnorm is calculated with global statistics of aux.params
-# rather than with current batch statistics
-mx.exec.forward(Executor,is.train=F)
-
-p = as.array(Executor$outputs[[1]])
-print(p)
-
-
-
-#####
-# CIFAR-100
+# 3) CIFAR-100
 #####
 
 dir = "C:/Users/Christophe/pCloud local/0_These/Autres formes de travaux/19_09_03 Seminaire R MXNET amap/"
@@ -269,18 +226,19 @@ dir = "C:/Users/Christophe/pCloud local/0_These/Autres formes de travaux/19_09_0
 ### LOAD TRAIN
 n = 50000
 labels = rep(NA,n)
-coarse = rep(NA,n)
+labels = rep(NA,n)
 
 gc(reset=T)
 to.read = file(paste(dir,"cifar-100-binary/train.bin",sep=""), "rb")
 v = readBin(to.read, "integer",n=n*3074, size=1 , signed=F)
+rm(to.read)
 
 # Extract images in an array
 train.array = array(0,dim = c(32,32,3,n))
 for(i in 1:n){
   TMP = NULL
-  labels[i] = v[(i-1)*3074 +2 ]
-  coarse[i] = v[(i-1)*3074 + 1]
+  #fine[i] = v[(i-1)*3074 +2 ]
+  labels[i] = v[(i-1)*3074 + 1]
   for(ch in 1:3){
     tmp = v[(i-1)*3074 + 2 + (1:1024) + (ch - 1 )*1024]
     Mtmp= as.vector(matrix(tmp,32,32))
@@ -289,24 +247,30 @@ for(i in 1:n){
   }
 }
 
-#tmp = array(as.vector(arrays[[1]]),dim=c(32,32,1,3))
-#im = cimg(tmp)
-#plot(im)
-rm(to.read)
-
-plot.RGBarray(train.array[,,,1])
+# Plot a training image
+i=3
+plot.RGBarray(train.array[,,,i])
 
 # Make TrAIN label array
-
 Y.train = array(0,dim=c(length(unique(labels)),length(labels)))
-for(i in 1:length(labels)){
-  Y.train[labels[i]+1,i] = 1 
-}
+for(i in 1:length(labels)){Y.train[labels[i]+1,i] = 1}
+
+# Subsample data and make VALIDATION SET
+# Validation set = 2% of whole train
+nTrain = 49000
+bag = 1:length(labels)
+sampled = sample(bag,nTrain)
+
+Xtrain =train.array[,,,sampled,drop=F]
+labtrain = Y.train[,sampled,drop=F]
+
+validSelec = setdiff(1:length(labels),sampled)
+Xvalid =train.array[,,,validSelec,drop=F]
+Yvalid = Y.train[,validSelec,drop=F]
 
 ### LOAD TEST
-
 n = 10000
-test.coarse.labels = rep(NA,n)
+test.labels.vect = rep(NA,n)
 gc(reset=T)
 to.read = file(paste(dir,"cifar-100-binary/test.bin",sep=""), "rb")
 v = readBin(to.read, "integer",n=n*3074, size=1 , signed=F)
@@ -314,7 +278,7 @@ v = readBin(to.read, "integer",n=n*3074, size=1 , signed=F)
 test.array = array(0,dim = c(32,32,3,n))
 for(i in 1:n){
   TMP = NULL
-  test.coarse.labels[i] = v[(i-1)*3074 + 1]
+  test.labels.vect[i] = v[(i-1)*3074 + 1]
   for(ch in 1:3){
     tmp = v[(i-1)*3074 + 2 + (1:1024) + (ch - 1 )*1024]
     Mtmp= as.vector(matrix(tmp,32,32))
@@ -324,36 +288,24 @@ for(i in 1:n){
 }
 
 # make TEST labels array
-Y.test = array(0,dim=c(length(unique(test.coarse.labels)),length(test.coarse.labels)))
-for(i in 1:length(labels)){
-  Y.test[test.coarse.labels[i]+1,i] = 1 
+Y.test = array(0,dim=c(length(unique(test.labels.vect)),length(test.labels.vect)))
+for(i in 1:length(test.labels.vect)){
+  Y.test[test.labels.vect[i]+1,i] = 1 
 }
 
 ### LABEL NAMES
-# Fine label name 
-setwd(paste(dir,'cifar-100-binary/',sep=""))
-labTab = read.csv('fine_label_names.txt',sep="",header=F)
-colnames(labTab)[1] = "name"
-labTab$id = 0:99
-
-nameLab = function(ids,tab=labTab){tmp = merge(data.frame(id=ids),tab,by="id",all.x=T,sort=F); return(as.character(tmp$name)) }
-
-nameLab(labels[1:10])
-
 # Coarse label name 
 setwd(paste(dir,'cifar-100-binary/',sep=""))
 labTab = read.csv('coarse_label_names.txt',sep="",header=F)
 colnames(labTab)[1] = "name"
 labTab$id = 0:19
 
+# Define function for returning label name from its id 
 nameLab = function(ids,tab=labTab){tmp = merge(data.frame(id=ids),tab,by="id",all.x=T,sort=F); return(as.character(tmp$name)) }
-
-nameLab(coarse[1:10])
-
-labels = coarse
+nameLab(labels[1:10])
 
 #####
-# Design CNN
+# 4) Design CNN
 #####
 
 n_labels = dim(Y.train)[1]
@@ -427,8 +379,11 @@ modelSymbols = list(loss=QuickLoss)
 graph = graph.viz(out,type="graph",direction="LR")
 print(graph)
 
+test = mx.mlp(data = train.array,label=labels, hidden_node = c(3,2,1),activation = "relu",out_node=20,learning.rate=0)
+
+
 #####
-# Design customized loss
+# 5) Design customized loss
 #####
 
 softmax = mx.symbol.softmax(data= out , axis=1,  name="softmax")
@@ -438,35 +393,19 @@ loss= mx.symbol.MakeLoss(data= 0  - label * mx.symbol.log( softmax ) , name="cro
 modelSymbols = list(loss=loss,pred=softmax)
 
 #####
-# SubSample train set and make Validation set
+# 6) Learning with SGD Momentum
 #####
-
-# Subsample data and make validaion set
-bag = 1:length(labels)
-sampled = sample(bag,49000)
-bag = setdiff(bag,sampled)
-
-Xtrain =train.array[,,,sampled,drop=F]
-labtrain = Y.train[,sampled,drop=F]
-
-validSelec = sample(bag,1000)
-Xvalid =train.array[,,,validSelec,drop=F]
-Yvalid = Y.train[,validSelec,drop=F]
-
-#####
-# Learning with SGD Momentum
-#####
-
 # Training parameters
 n_it= 500
 batch.size = 32
 saveDir = dir
-devices = mx.gpu()
+devices = MainDevice
 lr = rep(5e-6,n_it+1)
 modelName = "finish2"
 loadModel = F
 
-if(F){
+if(loadModel ==F){
+  # Randomly Initialize the model weights
   mx.set.seed(2019)
   model= mx.model.FeedForward.create(symbol=modelSymbols$loss[[1]],
                                      X=Xtrain,y=labtrain,                
@@ -474,20 +413,24 @@ if(F){
                                      learning.rate=0.,
                                      initializer = mx.init.uniform(0.03),
                                      array.layout = "colmajor")
-  Names = names(model$arg.params)
-  E_G = lapply(Names,function(arg) 0.*as.array(model$arg.params[arg][[1]]) )
-  names(E_G)=Names
 }else{
-  # ADD MODEL
-  model = NULL
+  # OR load pre-trained model
+  setwd(saveDir)
+  model = mx.model.load("finish2",iteration = 6)
 }
 
-tab = data.frame( it = 0:n_it,tr.loss = NA)
-valid = data.frame( it = 0:n_it,loss = NA)
+# Initialize the moving gradient average (For SGD/momentum algorithm) to 0
+Names = names(model$arg.params)
+E_G = lapply(Names,function(arg) 0.*as.array(model$arg.params[arg][[1]]) )
+names(E_G)=Names
+
+# Table of loss results per epoch for plot
+tab = data.frame( it = 0:n_it,tr.loss = NA,valid.loss=NA)
+
 # prediction sample 
 N = dim(labtrain)[2]
 samplo = sample(1:N,500)
-priorLoss = - log(1/ dim(labtrain)[1]) /dim(labtrain)[1]
+priorLoss = - log(1/ dim(labtrain)[1]) /dim(labtrain)[1] # prior Loss for plot
 n.batch = -( -N %/% batch.size)
 it=0
 while (it<=n_it){
@@ -497,7 +440,7 @@ while (it<=n_it){
   p = predict.executor(modelSymbols$pred[[1]],
                        model$arg.params,
                        Xtrain[,,,samplo,drop=F],
-                       devices = mx.cpu(),
+                       devices = MainDevice,
                        aux.params = model$aux.params,
                        max.compute.size = 200)
   # COMPUTE MEAN TRAIN LOSS
@@ -505,7 +448,7 @@ while (it<=n_it){
                        params =model$arg.params,
                        Array = Xtrain[,,,samplo,drop=F],
                        y = labtrain[,samplo,drop=F], 
-                       devices = mx.cpu(),
+                       devices = MainDevice,
                        aux.params = model$aux.params,
                        max.compute.size = 200)
   if(sum(is.na(loss))>0){loss[is.na(loss)] = 0}
@@ -536,20 +479,20 @@ while (it<=n_it){
   if(sum(is.na(loss))>0){loss[is.na(loss)] = 0}
   if(sum(is.infinite(loss))>0){
     print('Infinite terms in the validation loss')
-    valid$loss[tab$it==it]= NA
+    tab$valid.loss[tab$it==it]= NA
   }else{
     meanLoss = mean(as.vector(loss))
     print(paste('Mean validation Loss :',meanLoss))
-    valid$loss[tab$it==it]= meanLoss
+    tab$valid.loss[tab$it==it]= meanLoss
   }
   
   # PLOT LOSS
-  ypl = tab$tr.loss[tab$it<=it]
-  validPl = valid$loss[valid$it<=it]
-  ylim_r=range(c(ypl,0,priorLoss,validPl),na.rm = T)
+  trainLoss = tab$tr.loss[tab$it<=it]
+  validLoss = tab$valid.loss[tab$it<=it]
+  ylim_r=range(c(trainLoss,0,priorLoss,validLoss),na.rm = T)
   d=data.frame(its =c(0:it,0:it,0,it,0,it),
-               val=c(ypl,validPl,0,0,priorLoss,priorLoss),
-               curve= c(rep("train loss",length(ypl)),rep("validation loss",length(ypl)),"saturated loss","saturated loss","prior loss","prior loss"))
+               val=c(trainLoss,validLoss,0,0,priorLoss,priorLoss),
+               curve= c(rep("train loss",length(trainLoss)),rep("validation loss",length(validLoss)),"saturated loss","saturated loss","prior loss","prior loss"))
   pl=ggplot(d,aes(x=its,y=val,group=curve,colour=curve))+geom_point()+geom_line()+coord_cartesian(ylim = ylim_r) +ylab('Mean train loss')+xlab('Number of epochs')+theme_bw()
   print(pl)
   
@@ -562,13 +505,16 @@ while (it<=n_it){
     sampli = sampli[!(sampli%in% batchs.list[[k]]) ]
   }
   
-  executor = mx.simple.bind(model$symbol,data=dim(Xtrain[,,,batchs.list[[1]],drop=F]),grad.req ="write",ctx=devices)
+  executor = mx.simple.bind(model$symbol,
+                            data=dim(Xtrain[,,,batchs.list[[1]],drop=F]),
+                            grad.req ="write",
+                            ctx=MainDevice)
 
   # pass over each mini-batch
   for(k in 1:n.batch){
     elems = batchs.list[[k]]
     if(length(elems)<batch.size){
-      executor = mx.simple.bind(model$symbol,data=dim(Xtrain[,,,elems,drop=F]),grad.req ="write",ctx=devices)
+      executor = mx.simple.bind(model$symbol,data=dim(Xtrain[,,,elems,drop=F]),grad.req ="write",ctx=MainDevice)
     }
     cat('\r  Process ...',100*k/n.batch,' %                               \r')
     flush.console()
@@ -593,21 +539,17 @@ while (it<=n_it){
   it=it+1
   setwd(saveDir)
   mx.model.save(model,modelName,iteration=it)
+  write.table(tab,paste(modelName,"_losses.csv",sep=""),sep=";",row.names=F,col.names=T)
 }
 
-setwd(saveDir)
-# tab$valid.loss = valid$loss
-# write.table(tab,paste(modelName,"_losses.csv",sep=""),sep=";",row.names=F,col.names=T)
-
-
 #####
-# Evaluate model
+# 7) Evaluate model
 #####
 
 setwd(saveDir)
-model = mx.model.load("finish2",iteration = 6)
+model = mx.model.load(modelName,iteration = 6)
 
-# Validation accuracy
+# Plot Validation TopK-accuracies
 p.valid = predict.executor(modelSymbols$pred[[1]],
                      model$arg.params,
                      Xvalid,
@@ -619,7 +561,7 @@ accuracy = data.frame(K=1:dim(Yvalid)[1],topK_accuracy=NA)
 accuracy$topK_accuracy = sapply(accuracy$K,function(k) top.K.accuracy(pred=p.valid,label.matrix=Yvalid,K=k))
 ggplot(accuracy,aes(x=K,y=topK_accuracy))+geom_point()+geom_line()+theme_bw()+scale_y_continuous(limits = c(0,1))+ggtitle('Validation TopK-accuracy vs K')
 
-# Test accuracy
+# Plot Test TopK-accuracies
 p.test = predict.executor(modelSymbols$pred[[1]],
                            model$arg.params,
                            test.array,
@@ -630,8 +572,7 @@ accuracy = data.frame(K=1:dim(Y.test)[1],topK_accuracy=NA)
 accuracy$topK_accuracy = sapply(accuracy$K,function(k) top.K.accuracy(pred=p.test,label.matrix=Y.test,K=k))
 ggplot(accuracy,aes(x=K,y=topK_accuracy))+geom_point()+geom_line()+theme_bw()+scale_y_continuous(limits = c(0,1))+ggtitle('TEST TopK-accuracy vs K')
 
-# Try on a single test data
-
+# Try on a single test data Visualization and prediction
 i = sample(1:dim(test.array)[2],1)
 
 idx = order(p.test[,i],decreasing = T)
@@ -639,7 +580,6 @@ print('Prédictions')
 print(data.frame(rank=1:dim(p)[1],proba=p[idx,i],name=nameLab(idx-1,tab=labTab)))
 
 plot.RGBarray(test.array[,,,i])
-
 
 #####
 # Learn a CNN with high level wrapper
@@ -673,6 +613,62 @@ model <- mx.model.FeedForward.create(symbol=modelSymbols$loss[[1]],
                                      eval.metric= mx.metric.custom(name = "logLoss",log.loss.metric),
                                      batch.end.callback=mx.callback.save.checkpoint("wrapper")
 )
+
+
+#####
+# Set the seed
+#####
+
+# Use mx.set.seed instead of set.seed (doesn't work with mxnet number generator)
+# the seed is device specific=> generated numbers will not be the same between 
+# GPU and CPU
+cont = mx.cpu(0)
+for(i in 1:2){
+  set.seed(0)
+  print(mx.runif(c(1,1),0,1,ctx=cont))
+}
+
+for(i in 1:2){
+  mx.set.seed(0)
+  print(mx.runif(c(1,1),0,1,ctx=cont))
+}
+
+if(MainDevice$device=="gpu"){
+  cont = mx.gpu(0)
+  for(i in 1:2){
+    mx.set.seed(0)
+    print(mx.runif(c(1,1),0,1,ctx=cont))
+  }
+  # However, results generated on CPU will be different from GPU
+  # even with a same mx.seed
+}
+
+
+#####
+# Test executor 
+#####
+
+ve = array(c(1:3,3:1),dim=c(3,2))
+weights = matrix(c(1,0,0,0,1,0,0,0,1),3,3)
+# TEST executor
+data = mx.symbol.Variable(name="data")
+linPred = mx.symbol.FullyConnected( data = data, num_hidden = 3 , name="linpred" )
+output = mx.symbol.softmax(linPred,axis=1,name="SoftMax")
+
+Executor = mx.simple.bind(output,
+                          ctx=mx.cpu(),
+                          data= dim(ve))
+
+# on lui donne les données d'entrée (et de sortie pour la loss)
+# arguments parameters
+mx.exec.update.arg.arrays(Executor, list(data=mx.nd.array(ve),linpred_weight=mx.nd.array(weights)) , match.name=T)
+
+# is.train=F very important, batchnorm is calculated with global statistics of aux.params
+# rather than with current batch statistics
+mx.exec.forward(Executor,is.train=F)
+
+p = as.array(Executor$outputs[[1]])
+print(p)
 
 
 
