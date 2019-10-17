@@ -8,6 +8,8 @@ require(ggplot2)
 
 MainDevice = mx.gpu()
 
+CifarDir = "C:/Users/Christophe/pCloud local/0_These/Autres formes de travaux/19_09_03 Seminaire R MXNET amap/"
+
 #####
 # 1) Functions
 #####
@@ -159,6 +161,25 @@ plot.RGBarray = function(RGBarray){
   plot(im)
 }
 
+
+plot.metrics = function(tab,it){
+  cols=colnames(tab)
+  cd=tab$it<=it
+  ylim_r=range(c(tab$train.loss[cd],0,tab$valid.loss[cd],1),na.rm = T)
+  d=data.frame(its =c(0:it,0:it,0,it,0,it),
+               val=c(tab$train.loss[cd],tab$valid.loss[cd],0,0,1,1),
+               curve= c(rep("train loss",length(tab$train.loss[cd])),rep("validation loss",length(tab$valid.loss[cd])),"saturated loss","saturated loss","prior loss","prior loss"))
+  if('train.accuracy'%in%cols & 'valid.accuracy'%in%cols){
+    d2 = data.frame(its =c(0:it,0:it),
+                    val=c(tab$train.accuracy[cd],tab$valid.accuracy[cd]),
+                    curve= c(rep("tr. accuracy",length(tab$train.accuracy[cd])),rep("val. accuracy",length(tab$valid.accuracy[cd]))))
+    d = rbind(d,d2)
+  }
+  pl=ggplot(d,aes(x=its,y=val,group=curve,colour=curve))+geom_point()+geom_line()+coord_cartesian(ylim = ylim_r) +ylab('Mean train loss / accuracy')+xlab('Number of epochs')+theme_bw()
+  print(pl)
+}
+
+
 #####
 # 2) Use MxNet Nd Arrays
 #####
@@ -221,15 +242,13 @@ gc(reset=T)
 # 3) CIFAR-100
 #####
 
-dir = "C:/Users/Christophe/pCloud local/0_These/Autres formes de travaux/19_09_03 Seminaire R MXNET amap/"
-
 ### LOAD TRAIN
 n = 50000
 labels = rep(NA,n)
 labels = rep(NA,n)
 
 gc(reset=T)
-to.read = file(paste(dir,"cifar-100-binary/train.bin",sep=""), "rb")
+to.read = file(paste(CifarDir,"cifar-100-binary/train.bin",sep=""), "rb")
 v = readBin(to.read, "integer",n=n*3074, size=1 , signed=F)
 rm(to.read)
 
@@ -248,8 +267,12 @@ for(i in 1:n){
 }
 
 # Plot a training image
-i=3
-plot.RGBarray(train.array[,,,i])
+par(mfrow=c(4,5))
+examples = NULL
+for(i in 1:20){
+  examples[i]= which(labels==(i-1))[1]
+  plot.RGBarray(train.array[,,,examples[i]])
+}
 
 # Make TrAIN label array
 Y.train = array(0,dim=c(length(unique(labels)),length(labels)))
@@ -272,7 +295,7 @@ Yvalid = Y.train[,validSelec,drop=F]
 n = 10000
 test.labels.vect = rep(NA,n)
 gc(reset=T)
-to.read = file(paste(dir,"cifar-100-binary/test.bin",sep=""), "rb")
+to.read = file(paste(CifarDir,"cifar-100-binary/test.bin",sep=""), "rb")
 v = readBin(to.read, "integer",n=n*3074, size=1 , signed=F)
 # Extract images in an array
 test.array = array(0,dim = c(32,32,3,n))
@@ -295,14 +318,16 @@ for(i in 1:length(test.labels.vect)){
 
 ### LABEL NAMES
 # Coarse label name 
-setwd(paste(dir,'cifar-100-binary/',sep=""))
+setwd(paste(CifarDir,'cifar-100-binary/',sep=""))
 labTab = read.csv('coarse_label_names.txt',sep="",header=F)
 colnames(labTab)[1] = "name"
 labTab$id = 0:19
 
+print(labTab)
+
 # Define function for returning label name from its id 
 nameLab = function(ids,tab=labTab){tmp = merge(data.frame(id=ids),tab,by="id",all.x=T,sort=F); return(as.character(tmp$name)) }
-nameLab(labels[1:10])
+print(nameLab(labels[1:10]))
 
 #####
 # 4) Design CNN
@@ -379,9 +404,6 @@ modelSymbols = list(loss=QuickLoss)
 graph = graph.viz(out,type="graph",direction="LR")
 print(graph)
 
-test = mx.mlp(data = train.array,label=labels, hidden_node = c(3,2,1),activation = "relu",out_node=20,learning.rate=0)
-
-
 #####
 # 5) Design customized loss
 #####
@@ -393,13 +415,120 @@ loss= mx.symbol.MakeLoss(data= 0  - label * mx.symbol.log( softmax ) , name="cro
 modelSymbols = list(loss=loss,pred=softmax)
 
 #####
-# 6) Learning with SGD Momentum
+# 6) Learn CNN with high level wrapper
+#####
+
+AutoSymb= mx.symbol.SoftmaxOutput(data=out)
+
+# Network Weights initialization
+mx.set.seed(2019)
+model <- mx.model.FeedForward.create(symbol=AutoSymb,
+                                     X=Xtrain,
+                                     y=labtrain,
+                                     ctx=MainDevice,
+                                     begin.round=1,
+                                     num.round=1,
+                                     array.batch.size=50,
+                                     learning.rate=0,
+                                     initializer = mx.init.uniform(0.03))
+gc(reset=T)
+#tmp= as.array(model$arg.params['fc1_weight'][[1]])[1:10,1:10]
+
+n_it = 10
+metrics = data.frame(it=0:n_it,train.accuracy=NA,valid.accuracy=NA,train.loss=NA,valid.loss=NA)
+pred= predict( model , Xvalid ) 
+metrics$valid.accuracy[1] = mean(colSums(Yvalid * pred))
+metrics$valid.loss[1] = mean( - Yvalid * log(pred) )
+pred= predict( model , Xtrain[,,,sample(1:dim(labtrain)[2],1000)] )
+metrics$train.accuracy[1] = mean(colSums(labtrain * pred))
+metrics$train.loss[1] = mean( - labtrain * log(pred) )
+
+# Continue training
+for(i in 1:n_it){
+  model <- mx.model.FeedForward.create(symbol=model$symbol,
+                                       arg.params = model$arg.params,
+                                       X=Xtrain,
+                                       y=labtrain,
+                                       ctx=MainDevice,
+                                       begin.round=1,
+                                       num.round=1,
+                                       array.batch.size=32,
+                                       learning.rate=5e-9,
+                                       eval.data = list(data=Xvalid,label=Yvalid),
+                                       momentum=0.9  
+                                       #                                     eval.metric= mx.metric.custom(name = "logLoss",log.loss.metric)
+                                       #                                     batch.end.callback=mx.callback.save.checkpoint("wrapper")
+  )
+  gc(reset=T)
+
+  # Store metrics
+  cd = metrics$it==i
+  pred= predict( model , Xtrain[,,,sample(1:dim(labtrain)[2],1000)] )
+  metrics$train.accuracy[cd] = mean(colSums(Yvalid * pred))
+  metrics$train.loss[cd] = mean( - Yvalid * log(pred) )
+  
+  pred= predict( model , Xvalid )
+  metrics$valid.accuracy[cd] = mean(colSums(Yvalid * pred))
+  metrics$valid.loss[cd] = mean( - Yvalid * log(pred) )
+  
+  plot.metrics(metrics,i)
+}
+#tmp2 =as.array(model$arg.params['fc1_weight'][[1]])[1:10,1:10]
+#print(mean(abs(tmp2 - tmp)))
+
+#####
+# 7) Evaluate model
+#####
+
+setwd(CifarDir)
+loadedModel = mx.model.load("finish2",iteration = 6)
+
+modelTmp = list(symbol=AutoSymb,arg.params=loadedModel$arg.params,aux.params=loadedModel$aux.params )
+
+p.valid= predict(modelTmp,Xvalid)
+
+# Plot Validation TopK-accuracies
+#p.valid = predict.executor(modelSymbols$pred[[1]],model$arg.params,Xvalid,devices = mx.cpu(),aux.params = model$aux.params,max.compute.size = 200)
+
+accuracy = data.frame(K=1:dim(Yvalid)[1],topK_accuracy=NA,curve='trained model')
+accuracy$topK_accuracy = sapply(accuracy$K,function(k) top.K.accuracy(pred=p.valid,label.matrix=Yvalid,K=k))
+acc2 = data.frame(K=1:dim(Yvalid)[1],topK_accuracy=NA,curve='prior')
+acc2$topK_accuracy = sapply(accuracy$K,function(k) k/dim(labtrain)[1])
+accuracy= rbind(accuracy,acc2)
+ggplot(accuracy,aes(x=K,y=topK_accuracy,group=curve,colour=curve))+geom_point()+geom_line()+theme_bw()+scale_y_continuous(limits = c(0,1))+ggtitle('Validation TopK-accuracy vs K')
+
+# Plot Test TopK-accuracies
+#p.test = predict.executor(modelSymbols$pred[[1]],model$arg.params,test.array,devices = mx.cpu(),aux.params = model$aux.params,max.compute.size = 200)
+p.test = predict(modelTmp,test.array)
+  
+accuracy = data.frame(K=1:dim(Y.test)[1],topK_accuracy=NA,curve="trained model")
+accuracy$topK_accuracy = sapply(accuracy$K,function(k) top.K.accuracy(pred=p.test,label.matrix=Y.test,K=k))
+acc2 = data.frame(K=1:dim(Yvalid)[1],topK_accuracy=NA,curve='prior')
+acc2$topK_accuracy = sapply(accuracy$K,function(k) k/dim(labtrain)[1])
+accuracy= rbind(accuracy,acc2)
+ggplot(accuracy,aes(x=K,y=topK_accuracy,group=curve,colour=curve))+geom_point()+geom_line()+theme_bw()+scale_y_continuous(limits = c(0,1))+ggtitle('TEST TopK-accuracy vs K')
+
+# Try on a single test data Visualization and prediction
+i = sample(1:dim(test.array)[2],1)
+
+idx = order(p.test[,i],decreasing = T)
+print('Prédictions')
+df=data.frame(rank=1:dim(p.test)[1],proba=p.test[idx,i],name=nameLab(idx-1,tab=labTab),truth=rep('',dim(p.test)[1]))
+df$truth=as.character(df$truth)
+df$truth[as.character(df$name)==nameLab(which(Y.test[,i]==1)-1,tab = labTab)]="Truth"
+print(df)
+
+dev.off()
+plot.RGBarray(test.array[,,,i])
+
+
+#####
+# 8) Lean CNN with low levels functions
 #####
 # Training parameters
 n_it= 500
 batch.size = 32
-saveDir = dir
-devices = MainDevice
+saveDir = CifarDir
 lr = rep(5e-6,n_it+1)
 modelName = "finish2"
 loadModel = F
@@ -509,7 +638,7 @@ while (it<=n_it){
                             data=dim(Xtrain[,,,batchs.list[[1]],drop=F]),
                             grad.req ="write",
                             ctx=MainDevice)
-
+  
   # pass over each mini-batch
   for(k in 1:n.batch){
     elems = batchs.list[[k]]
@@ -519,7 +648,7 @@ while (it<=n_it){
     cat('\r  Process ...',100*k/n.batch,' %                               \r')
     flush.console()
     GradAndAux = get.all.gradients(model,Xtrain[,,,elems,drop=F],labtrain[,elems,drop=F],executor)
-
+    
     for(arg in names(GradAndAux[[2]])){
       # Update each auxiliary parameter set by extracting them from GradAndAux
       # We copy those components to the CPU 
@@ -542,77 +671,6 @@ while (it<=n_it){
   write.table(tab,paste(modelName,"_losses.csv",sep=""),sep=";",row.names=F,col.names=T)
 }
 
-#####
-# 7) Evaluate model
-#####
-
-setwd(saveDir)
-model = mx.model.load(modelName,iteration = 6)
-
-# Plot Validation TopK-accuracies
-p.valid = predict.executor(modelSymbols$pred[[1]],
-                     model$arg.params,
-                     Xvalid,
-                     devices = mx.cpu(),
-                     aux.params = model$aux.params,
-                     max.compute.size = 200)
-
-accuracy = data.frame(K=1:dim(Yvalid)[1],topK_accuracy=NA)
-accuracy$topK_accuracy = sapply(accuracy$K,function(k) top.K.accuracy(pred=p.valid,label.matrix=Yvalid,K=k))
-ggplot(accuracy,aes(x=K,y=topK_accuracy))+geom_point()+geom_line()+theme_bw()+scale_y_continuous(limits = c(0,1))+ggtitle('Validation TopK-accuracy vs K')
-
-# Plot Test TopK-accuracies
-p.test = predict.executor(modelSymbols$pred[[1]],
-                           model$arg.params,
-                           test.array,
-                           devices = mx.cpu(),
-                           aux.params = model$aux.params,
-                           max.compute.size = 200)
-accuracy = data.frame(K=1:dim(Y.test)[1],topK_accuracy=NA)
-accuracy$topK_accuracy = sapply(accuracy$K,function(k) top.K.accuracy(pred=p.test,label.matrix=Y.test,K=k))
-ggplot(accuracy,aes(x=K,y=topK_accuracy))+geom_point()+geom_line()+theme_bw()+scale_y_continuous(limits = c(0,1))+ggtitle('TEST TopK-accuracy vs K')
-
-# Try on a single test data Visualization and prediction
-i = sample(1:dim(test.array)[2],1)
-
-idx = order(p.test[,i],decreasing = T)
-print('Prédictions')
-print(data.frame(rank=1:dim(p)[1],proba=p[idx,i],name=nameLab(idx-1,tab=labTab)))
-
-plot.RGBarray(test.array[,,,i])
-
-#####
-# Learn a CNN with high level wrapper
-#####
-
-# Define a metric displayed at every epoch
-log.loss.metric = function(label,pred){
-  return(mx.nd.mean( - label * mx.nd.log(pred) ))
-}
-
-# Training parameters
-n_it= 100
-batch.size = 32
-saveDir = dir
-devices = mx.gpu()
-lr = rep(1e-5,n_it+1)
-
-# Learn the model
-mx.set.seed(2019)
-model <- mx.model.FeedForward.create(symbol=modelSymbols$loss[[1]],
-                                     X=Xtrain,
-                                     y=labtrain,
-                                     ctx=devices,
-                                     begin.round=1,
-                                     num.round=10,
-                                     array.batch.size=batch.size,
-                                     learning.rate=lr[1],
-                                     eval.data = list(data=Xvalid,label=Yvalid),
-                                     momentum=0.9,  
-                                     initializer = mx.init.uniform(0.03),
-                                     eval.metric= mx.metric.custom(name = "logLoss",log.loss.metric),
-                                     batch.end.callback=mx.callback.save.checkpoint("wrapper")
-)
 
 
 #####
@@ -670,5 +728,17 @@ mx.exec.forward(Executor,is.train=F)
 p = as.array(Executor$outputs[[1]])
 print(p)
 
+#####
+# Custom callback
+#####
+
+# Define a metric displayed at every epoch
+accuracy.metric = mx.metric.custom("accuracyTop1", function(label, pred) {
+  return(mean(colSums(label * pred)))
+})
+#log.loss.metric = function(label,pred){return(mx.nd.mean( - label * mx.nd.log(pred) ))}
+
+#eval.metric= mx.metric.custom(name = "logLoss",log.loss.metric),
+#batch.end.callback=mx.callback.save.checkpoint("wrapper")
 
 
