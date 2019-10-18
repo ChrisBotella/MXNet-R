@@ -405,19 +405,11 @@ graph = graph.viz(out,type="graph",direction="LR")
 print(graph)
 
 #####
-# 5) Design customized loss
-#####
-
-softmax = mx.symbol.softmax(data= out , axis=1,  name="softmax")
-
-loss= mx.symbol.MakeLoss(data= 0  - label * mx.symbol.log( softmax ) , name="cross_entropy_custom")
-
-modelSymbols = list(loss=loss,pred=softmax)
-
-#####
 # 6) Learn CNN with high level wrapper
 #####
 
+ModelSaveName="CNN_cifarCoarse"
+  
 AutoSymb= mx.symbol.SoftmaxOutput(data=out)
 
 # Network Weights initialization
@@ -452,6 +444,7 @@ for(i in 1:n_it){
                                        ctx=MainDevice,
                                        begin.round=1,
                                        num.round=1,
+                                       optimizer = "sgd",# Or "adam", "adadelta"....
                                        array.batch.size=32,
                                        learning.rate=5e-9,
                                        eval.data = list(data=Xvalid,label=Yvalid),
@@ -472,6 +465,9 @@ for(i in 1:n_it){
   metrics$valid.loss[cd] = mean( - Yvalid * log(pred) )
   
   plot.metrics(metrics,i)
+  
+  setwd(CifarDir)
+  mx.model.save(model,ModelSaveName,iteration=it)
 }
 #tmp2 =as.array(model$arg.params['fc1_weight'][[1]])[1:10,1:10]
 #print(mean(abs(tmp2 - tmp)))
@@ -523,15 +519,25 @@ plot.RGBarray(test.array[,,,i])
 
 
 #####
-# 8) Lean CNN with low levels functions
+# 8) Design customized loss
+#####
+
+softmax = mx.symbol.softmax(data= out , axis=1,  name="softmax")
+
+loss= mx.symbol.MakeLoss(data= 0  - label * mx.symbol.log( softmax ) , name="cross_entropy_custom")
+
+modelSymbols = list(loss=loss,pred=softmax)
+
+#####
+# 9) Lean CNN with low levels functions
 #####
 # Training parameters
 n_it= 500
 batch.size = 32
 saveDir = CifarDir
 lr = rep(5e-6,n_it+1)
-modelName = "finish2"
-loadModel = F
+modelName = "finish3"
+loadModel = T
 
 if(loadModel ==F){
   # Randomly Initialize the model weights
@@ -554,7 +560,7 @@ E_G = lapply(Names,function(arg) 0.*as.array(model$arg.params[arg][[1]]) )
 names(E_G)=Names
 
 # Table of loss results per epoch for plot
-tab = data.frame( it = 0:n_it,tr.loss = NA,valid.loss=NA)
+tab = data.frame( it = 0:n_it,train.loss = NA,valid.loss=NA)
 
 # prediction sample 
 N = dim(labtrain)[2]
@@ -583,11 +589,11 @@ while (it<=n_it){
   if(sum(is.na(loss))>0){loss[is.na(loss)] = 0}
   if(sum(is.infinite(loss))>0){
     print('Infinite terms in the train loss')
-    tab$tr.loss[tab$it==it]= NA
+    tab$train.loss[tab$it==it]= NA
   }else{
     meanLoss = mean(as.vector(loss))
     print(paste('Mean train Loss :',meanLoss))
-    tab$tr.loss[tab$it==it]= meanLoss
+    tab$train.loss[tab$it==it]= meanLoss
   }
   
   # PREDICT on validation
@@ -616,14 +622,16 @@ while (it<=n_it){
   }
   
   # PLOT LOSS
-  trainLoss = tab$tr.loss[tab$it<=it]
-  validLoss = tab$valid.loss[tab$it<=it]
-  ylim_r=range(c(trainLoss,0,priorLoss,validLoss),na.rm = T)
-  d=data.frame(its =c(0:it,0:it,0,it,0,it),
-               val=c(trainLoss,validLoss,0,0,priorLoss,priorLoss),
-               curve= c(rep("train loss",length(trainLoss)),rep("validation loss",length(validLoss)),"saturated loss","saturated loss","prior loss","prior loss"))
-  pl=ggplot(d,aes(x=its,y=val,group=curve,colour=curve))+geom_point()+geom_line()+coord_cartesian(ylim = ylim_r) +ylab('Mean train loss')+xlab('Number of epochs')+theme_bw()
-  print(pl)
+  plot.metrics(tab = tab,it = it)
+  
+  #trainLoss = tab$tr.loss[tab$it<=it]
+  #validLoss = tab$valid.loss[tab$it<=it]
+  #ylim_r=range(c(trainLoss,0,priorLoss,validLoss),na.rm = T)
+  #d=data.frame(its =c(0:it,0:it,0,it,0,it),
+  #             val=c(trainLoss,validLoss,0,0,priorLoss,priorLoss),
+  #             curve= c(rep("train loss",length(trainLoss)),rep("validation loss",length(validLoss)),"saturated loss","saturated loss","prior loss","prior loss"))
+  #pl=ggplot(d,aes(x=its,y=val,group=curve,colour=curve))+geom_point()+geom_line()+coord_cartesian(ylim = ylim_r) +ylab('Mean train loss')+xlab('Number of epochs')+theme_bw()
+  #print(pl)
   
   # Tirage des mini-batchs
   sampli = 1:N
